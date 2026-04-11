@@ -37,6 +37,9 @@ async def analyze_timestamps(data: TimestampInput) -> Dict:
             else:
                 states.append("Drift")
         
+        # This line lets you see every test in your Render logs
+        print(f"🚨 REDLINE USED! {len(data.timestamps)} timestamps received → States: {states}")
+        
         return {
             "states": states,
             "baseline_minutes": round(float(baseline), 2),
