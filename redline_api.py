@@ -93,3 +93,9 @@ async def analyze(data: TimestampInput, request: Request):
 
     logger.info(f"Response → {client_ip} | state={state} | drift_score={response['drift_score']} | baseline={response['baseline_interval_ms']}ms")
     return response
+# Mount the interactive docs
+from fastapi.openapi.docs import get_swagger_ui_html
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(openapi_url=app.openapi_url, title=app.title)
