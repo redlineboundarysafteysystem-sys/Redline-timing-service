@@ -11,8 +11,8 @@ logger = logging.getLogger("redline")
 
 app = FastAPI(title="RedLINE Timing Service")
 
-WINDOW_SIZE = 8                    # Good for fast demos
-SCORE_HISTORY_SIZE = 10            # For trend calculation
+WINDOW_SIZE = 8                    # Responsive for demos
+SCORE_HISTORY_SIZE = 10            # For trend
 
 class TimestampInput(BaseModel):
     timestamps: List[str]
@@ -28,9 +28,9 @@ class StateResponse(BaseModel):
     trend: str
     trend_velocity: float
 
-# In-memory storage
-events: deque[float] = deque(maxlen=WINDOW_SIZE)          # recent intervals (ms)
-score_history: deque[float] = deque(maxlen=SCORE_HISTORY_SIZE)  # recent drift scores
+# In-memory rolling storage
+events: deque[float] = deque(maxlen=WINDOW_SIZE)           # intervals in ms
+score_history: deque[float] = deque(maxlen=SCORE_HISTORY_SIZE)
 
 @app.post("/analyze", response_model=StateResponse)
 async def analyze(data: TimestampInput, request: Request):
@@ -50,6 +50,7 @@ async def analyze(data: TimestampInput, request: Request):
             "trend_velocity": 0.0
         }
 
+    # Parse timestamps
     try:
         parsed_times = []
         for ts in data.timestamps:
@@ -92,8 +93,8 @@ async def analyze(data: TimestampInput, request: Request):
     current = intervals[-1]
     z_score = abs(current - baseline) / sigma
 
-    # Determine state
-    if z_score < 2.0:
+    # State determination
+    if z_score < 1.8:                     # Slightly lowered for better demo sensitivity
         state = "Stable"
         message = "Timing is healthy"
         human_summary = "Rhythm looks healthy."
@@ -106,22 +107,22 @@ async def analyze(data: TimestampInput, request: Request):
         message = "Cadence has drifted - intervene now"
         human_summary = "Timing has clearly shifted. Time to act."
 
-    # Simple trend calculation
+    # Trend calculation
     score_history.append(z_score)
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent) / len(recent)
         velocity = z_score - prev_avg
-        buffer = 0.1
+        buffer = 0.15
         if velocity > buffer:
             trend = "Increasing"
             trend_velocity = round(velocity, 3)
-            if state in ["Shifting", "Drift"]:
+            if state != "Stable":
                 human_summary += " — and it’s accelerating."
         elif velocity < -buffer:
             trend = "Decreasing"
             trend_velocity = round(velocity, 3)
-            if state in ["Shifting", "Drift"]:
+            if state != "Stable":
                 human_summary += " — but slowing down."
         else:
             trend = "Steady"
