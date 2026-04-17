@@ -12,7 +12,7 @@ logger = logging.getLogger("redline")
 app = FastAPI(title="RedLINE Timing Service")
 
 # Configuration
-WINDOW_SIZE = 20
+WINDOW_SIZE = 8   # Lowered for faster demo/testing (shows Shifting/Drift quicker)
 events = deque(maxlen=WINDOW_SIZE)  # keeps only the last 20 intervals
 
 class TimestampInput(BaseModel):
