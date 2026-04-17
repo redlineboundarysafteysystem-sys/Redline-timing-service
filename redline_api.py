@@ -12,7 +12,7 @@ logger = logging.getLogger("redline")
 app = FastAPI(title="RedLINE Timing Service")
 
 WINDOW_SIZE = 8                    # Responsive for demos
-SCORE_HISTORY_SIZE = 10            # For trend
+SCORE_HISTORY_SIZE = 10
 
 class TimestampInput(BaseModel):
     timestamps: List[str]
@@ -28,8 +28,8 @@ class StateResponse(BaseModel):
     trend: str
     trend_velocity: float
 
-# In-memory rolling storage
-events: deque[float] = deque(maxlen=WINDOW_SIZE)           # intervals in ms
+# In-memory storage
+events: deque[float] = deque(maxlen=WINDOW_SIZE)
 score_history: deque[float] = deque(maxlen=SCORE_HISTORY_SIZE)
 
 @app.post("/analyze", response_model=StateResponse)
@@ -93,8 +93,8 @@ async def analyze(data: TimestampInput, request: Request):
     current = intervals[-1]
     z_score = abs(current - baseline) / sigma
 
-    # State determination
-    if z_score < 1.8:                     # Slightly lowered for better demo sensitivity
+    # State + human_summary
+    if z_score < 1.8:   # Slightly lowered for reliable early warning in demos
         state = "Stable"
         message = "Timing is healthy"
         human_summary = "Rhythm looks healthy."
