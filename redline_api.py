@@ -26,19 +26,19 @@ async def analyze(data: TimestampInput, request: Request):
     if not data.timestamps:
         raise HTTPException(status_code=400, detail="No timestamps provided")
 
-    # Parse timestamps and calculate current interval
+    # Parse timestamps
     parsed = []
     for ts_str in data.timestamps:
         try:
             dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             parsed.append(dt)
-        except Exception as e:
+        except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid timestamp format: {ts_str}")
 
     if len(parsed) < 2:
         raise HTTPException(status_code=400, detail="At least 2 timestamps required")
 
-    # Calculate the latest interval in milliseconds
+    # Calculate intervals in milliseconds
     intervals = []
     for i in range(1, len(parsed)):
         delta = (parsed[i] - parsed[i-1]).total_seconds() * 1000
@@ -63,7 +63,7 @@ async def analyze(data: TimestampInput, request: Request):
 
     rolling_window = list(events)
 
-    # Improved Z-score logic with standard deviation
+    # Z-score logic with standard deviation
     baseline = np.mean(rolling_window)
     sigma = np.std(rolling_window, ddof=1)
 
