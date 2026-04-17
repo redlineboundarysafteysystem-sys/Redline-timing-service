@@ -2,10 +2,10 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
-import statistics
+import numpy as np
+from collections import deque
 import logging
 
-# Setup logging so we can see usage in Render logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("redline")
 
@@ -13,89 +13,83 @@ app = FastAPI(title="RedLINE Timing Service")
 
 # Configuration
 WINDOW_SIZE = 20
-DRIFT_THRESHOLD = 0.25
-DRIFT_CONSECUTIVE = 3
+events = deque(maxlen=WINDOW_SIZE)  # keeps only the last 20 intervals
 
 class TimestampInput(BaseModel):
     timestamps: List[str]
 
-class StateResponse(BaseModel):
-    state: str
-    drift_score: float
-    baseline_interval_ms: float
-    current_interval_ms: float
-    message: str
-    events_processed: int
-
-events: List[datetime] = []
-
-@app.post("/analyze", response_model=StateResponse)
+@app.post("/analyze")
 async def analyze(data: TimestampInput, request: Request):
     client_ip = request.client.host if request.client else "unknown"
-    
     logger.info(f"API call from {client_ip} | Received {len(data.timestamps)} timestamps")
 
     if not data.timestamps:
         raise HTTPException(status_code=400, detail="No timestamps provided")
 
-    try:
-        new_times = [datetime.fromisoformat(ts.replace("Z", "+00:00")) for ts in data.timestamps]
-        events.extend(new_times)
-    except Exception as e:
-        logger.error(f"Invalid timestamp from {client_ip}: {e}")
-        raise HTTPException(status_code=400, detail="Invalid ISO timestamp format")
+    # Parse timestamps and calculate current interval
+    parsed = []
+    for ts_str in data.timestamps:
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            parsed.append(dt)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid timestamp format: {ts_str}")
 
-    # Keep reasonable history
-    if len(events) > WINDOW_SIZE * 3:
-        del events[:-WINDOW_SIZE * 3]
+    if len(parsed) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 timestamps required")
+
+    # Calculate the latest interval in milliseconds
+    intervals = []
+    for i in range(1, len(parsed)):
+        delta = (parsed[i] - parsed[i-1]).total_seconds() * 1000
+        intervals.append(delta)
+
+    current_interval_ms = intervals[-1]
+
+    # Add to rolling window
+    events.append(current_interval_ms)
 
     if len(events) < 2:
-        logger.info(f"Still collecting baseline | events: {len(events)}")
-        return StateResponse(
-            state="Stable",
-            drift_score=0.0,
-            baseline_interval_ms=0.0,
-            current_interval_ms=0.0,
-            message="Collecting initial events...",
-            events_processed=len(events)
-        )
+        response = {
+            "state": "Stable",
+            "drift_score": 0.0,
+            "baseline_interval_ms": 0.0,
+            "current_interval_ms": round(current_interval_ms, 1),
+            "message": "Building baseline...",
+            "events_processed": len(events)
+        }
+        logger.info(f"Response → {client_ip} | state=Stable | building baseline")
+        return response
 
-    # Calculate intervals
-    intervals = [(events[i+1] - events[i]).total_seconds() * 1000 for i in range(len(events)-1)]
-    
-    recent = intervals[-WINDOW_SIZE:] if len(intervals) >= WINDOW_SIZE else intervals
-    baseline = statistics.mean(recent)
-    current = intervals[-1]
+    rolling_window = list(events)
 
-    deviation = abs(current - baseline) / baseline if baseline > 0 else 0
-    drift_score = round(deviation, 3)
+    # Improved Z-score logic with standard deviation
+    baseline = np.mean(rolling_window)
+    sigma = np.std(rolling_window, ddof=1)
 
-    recent_deviations = sum(1 for i in intervals[-DRIFT_CONSECUTIVE:] if abs(i - baseline)/baseline > DRIFT_THRESHOLD)
+    if sigma == 0:
+        sigma = baseline * 0.001 if baseline > 0 else 1.0
 
-    if len(recent) < DRIFT_CONSECUTIVE:
-        state = "Stable"
-        message = "Still establishing baseline"
-    elif deviation < DRIFT_THRESHOLD:
+    z_score = abs(current_interval_ms - baseline) / sigma
+
+    if z_score < 2.0:
         state = "Stable"
         message = "Timing is healthy"
-    elif recent_deviations >= DRIFT_CONSECUTIVE:
+    elif z_score < 3.0:
+        state = "Shifting"
+        message = "Early timing drift forming — monitor closely"
+    else:
         state = "Drift"
         message = "Cadence has drifted — early action recommended"
-    else:
-        state = "Shifting"
-        message = "Timing is starting to stretch — monitor closely"
 
-    logger.info(f"Response → {client_ip} | state={state} | drift_score={drift_score} | baseline={round(baseline,1)}ms")
+    response = {
+        "state": state,
+        "drift_score": round(z_score, 3),
+        "baseline_interval_ms": round(baseline, 1),
+        "current_interval_ms": round(current_interval_ms, 1),
+        "message": message,
+        "events_processed": len(events)
+    }
 
-    return StateResponse(
-        state=state,
-        drift_score=drift_score,
-        baseline_interval_ms=round(baseline, 1),
-        current_interval_ms=round(current, 1),
-        message=message,
-        events_processed=len(events)
-    )
-
-@app.get("/test")
-async def test():
-    return {"message": "RedLINE API ready. POST to /analyze with {\"timestamps\": [\"2026-04-15T10:00:00\", ...]}"}
+    logger.info(f"Response → {client_ip} | state={state} | drift_score={response['drift_score']} | baseline={response['baseline_interval_ms']}ms")
+    return response
