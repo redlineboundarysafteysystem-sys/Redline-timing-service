@@ -105,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Refined logic with sharper Drift message
+    # Final logic with your sharper Drift message
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
@@ -117,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 2.1:
+    elif z_score < 2.0:
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
@@ -127,8 +127,8 @@ async def analyze(data: TimestampInput, request: Request):
             message = "Early timing drift forming - upstream warning"
     else:
         state = "Drift"
-        # Sharper message for severe compression
-        if current_interval < baseline * 0.3:   # very sharp collapse
+        # Your requested sharper message for severe cases
+        if current_interval < baseline * 0.3:
             human_summary = "Cadence has moved sharply off baseline. Severe compression detected."
         else:
             human_summary = "Cadence has moved off baseline. Drift detected."
