@@ -108,7 +108,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Updated human_summary logic
+    # Refined human_summary logic
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
@@ -126,7 +126,7 @@ async def analyze(data: TimestampInput, request: Request):
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
             message = "Early timing drift forming - upstream warning"
         else:
-            human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s slowing."
+            human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and the drift is slowing."
             message = "Early timing drift forming - upstream warning"
     else:
         state = "Drift"
