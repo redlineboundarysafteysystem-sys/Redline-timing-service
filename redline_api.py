@@ -28,7 +28,6 @@ class StateResponse(BaseModel):
     trend: str
     trend_velocity: float
 
-# Rolling windows
 intervals_window: deque[float] = deque(maxlen=WINDOW_SIZE)
 score_history: deque[float] = deque(maxlen=SCORE_HISTORY_SIZE)
 
@@ -37,10 +36,9 @@ async def analyze(data: TimestampInput, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     logger.info(f"redline:Received {len(data.timestamps)} timestamps from {client_ip}")
 
-    # Sort timestamps chronologically and clean them
+    # Sort and parse timestamps
     sorted_timestamps = sorted(data.timestamps)
     parsed_times = []
-    
     for ts_str in sorted_timestamps:
         try:
             clean_ts = ts_str.replace("Z", "+00:00")
@@ -48,7 +46,7 @@ async def analyze(data: TimestampInput, request: Request):
             parsed_times.append(dt)
         except Exception as e:
             logger.warning(f"Failed to parse timestamp {ts_str}: {e}")
-            continue  # Skip bad timestamps gracefully
+            continue
 
     if len(parsed_times) < 2:
         return StateResponse(
@@ -63,17 +61,15 @@ async def analyze(data: TimestampInput, request: Request):
             trend_velocity=0.0
         )
 
-    # Calculate intervals in milliseconds
+    # Calculate new intervals
     new_intervals = []
     for i in range(1, len(parsed_times)):
         delta = (parsed_times[i] - parsed_times[i-1]).total_seconds() * 1000
         new_intervals.append(delta)
 
-    # Update rolling window
     for interval in new_intervals:
         intervals_window.append(interval)
 
-    # Need at least 2 valid intervals for meaningful calculation
     if len(intervals_window) < 2:
         return StateResponse(
             human_summary="Rhythm looks healthy.",
@@ -87,7 +83,7 @@ async def analyze(data: TimestampInput, request: Request):
             trend_velocity=0.0
         )
 
-    # Z-score calculation
+    # Z-score and trend
     baseline = np.mean(intervals_window)
     sigma = np.std(intervals_window, ddof=1) if len(intervals_window) > 1 else baseline * 0.001
     if sigma == 0:
@@ -96,7 +92,6 @@ async def analyze(data: TimestampInput, request: Request):
     current_interval = intervals_window[-1]
     z_score = abs(current_interval - baseline) / sigma
 
-    # Trend calculation
     score_history.append(z_score)
     if len(score_history) >= 2:
         recent_avg = np.mean(list(score_history)[-3:])
@@ -113,22 +108,26 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # State and human_summary logic
+    # Updated human_summary logic
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
-            human_summary = "Rhythm looks healthy. — but speeding up slightly."
+            human_summary = "Rhythm looks healthy — but spacing is tightening slightly. Early compression forming."
+            message = "Timing is healthy, but tightening slightly"
         elif trend == "Decreasing":
-            human_summary = "Rhythm looks healthy. Intervals are lengthening slightly."
+            human_summary = "Rhythm looks healthy — but spacing is widening slightly."
+            message = "Timing is healthy, but widening slightly"
         else:
             human_summary = "Rhythm looks healthy."
-        message = "Timing is healthy"
+            message = "Timing is healthy"
     elif z_score < 3.0:
         state = "Shifting"
-        human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected."
         if trend == "Increasing":
-            human_summary += " — and it’s accelerating."
-        message = "Early timing drift forming - upstream warning"
+            human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
+            message = "Early timing drift forming - upstream warning"
+        else:
+            human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s slowing."
+            message = "Early timing drift forming - upstream warning"
     else:
         state = "Drift"
         human_summary = "Cadence has moved off baseline. Drift detected."
@@ -136,17 +135,17 @@ async def analyze(data: TimestampInput, request: Request):
             human_summary += " — and it’s accelerating."
         message = "Critical – upstream shift detected"
 
-    response = {
-        "human_summary": human_summary,
-        "state": state,
-        "drift_score": round(z_score, 3),
-        "baseline_interval_ms": round(baseline, 0),
-        "current_interval_ms": round(current_interval, 0),
-        "message": message,
-        "events_processed": len(parsed_times),
-        "trend": trend,
-        "trend_velocity": trend_velocity
-    }
+    response = StateResponse(
+        human_summary=human_summary,
+        state=state,
+        drift_score=round(z_score, 3),
+        baseline_interval_ms=round(baseline, 0),
+        current_interval_ms=round(current_interval, 0),
+        message=message,
+        events_processed=len(parsed_times),
+        trend=trend,
+        trend_velocity=trend_velocity
+    )
 
-    logger.info(f"Response: {state} | drift={response['drift_score']} | trend={trend}")
-    return StateResponse(**response)
+    logger.info(f"Response: {state} | drift={response.drift_score} | trend={trend}")
+    return response
