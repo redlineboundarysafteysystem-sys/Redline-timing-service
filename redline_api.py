@@ -105,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Final state classification for trust and clarity
+    # Final thresholds for real trust and clear state alignment
     if z_score < 1.5:
         state = "Stable"
         if trend == "Increasing":
@@ -117,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 2.5:
+    elif z_score < 2.0:
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
