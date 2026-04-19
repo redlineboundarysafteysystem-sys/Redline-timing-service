@@ -105,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Adjusted thresholds for better demo reach
+    # Final adjusted thresholds for good demo reach
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
@@ -117,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 2.8:   # <--- lowered from 3.0
+    elif z_score < 2.5:   # <--- lowered to 2.5
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
