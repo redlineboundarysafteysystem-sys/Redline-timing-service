@@ -36,7 +36,6 @@ async def analyze(data: TimestampInput, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     logger.info(f"redline:Received {len(data.timestamps)} timestamps from {client_ip}")
 
-    # Sort and parse timestamps
     sorted_timestamps = sorted(data.timestamps)
     parsed_times = []
     for ts_str in sorted_timestamps:
@@ -61,7 +60,6 @@ async def analyze(data: TimestampInput, request: Request):
             trend_velocity=0.0
         )
 
-    # Calculate new intervals
     new_intervals = []
     for i in range(1, len(parsed_times)):
         delta = (parsed_times[i] - parsed_times[i-1]).total_seconds() * 1000
@@ -83,7 +81,6 @@ async def analyze(data: TimestampInput, request: Request):
             trend_velocity=0.0
         )
 
-    # Z-score and trend
     baseline = np.mean(intervals_window)
     sigma = np.std(intervals_window, ddof=1) if len(intervals_window) > 1 else baseline * 0.001
     if sigma == 0:
@@ -108,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Refined human_summary logic
+    # Adjusted thresholds for better demo reach
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
@@ -120,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 3.0:
+    elif z_score < 2.8:   # <--- lowered from 3.0
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
