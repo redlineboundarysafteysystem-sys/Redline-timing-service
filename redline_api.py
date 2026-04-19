@@ -105,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Improved state classification for real trust
+    # Final state classification for real trust
     if z_score < 1.5:
         state = "Stable"
         if trend == "Increasing":
