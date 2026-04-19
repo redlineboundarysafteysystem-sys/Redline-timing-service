@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
@@ -11,7 +11,7 @@ logger = logging.getLogger("redline")
 
 app = FastAPI(title="RedLINE Timing Service")
 
-WINDOW_SIZE = 8                    # Responsive for demos
+WINDOW_SIZE = 8
 SCORE_HISTORY_SIZE = 10
 
 class TimestampInput(BaseModel):
@@ -29,61 +29,68 @@ class StateResponse(BaseModel):
     trend_velocity: float
 
 # In-memory storage
-events: deque[float] = deque(maxlen=WINDOW_SIZE)
+events: deque[datetime] = deque(maxlen=WINDOW_SIZE)
 score_history: deque[float] = deque(maxlen=SCORE_HISTORY_SIZE)
 
 @app.post("/analyze", response_model=StateResponse)
 async def analyze(data: TimestampInput, request: Request):
     client_ip = request.client.host if request.client else "unknown"
-    logger.info(f"Received {len(data.timestamps)} timestamps from {client_ip}")
-
-    if len(data.timestamps) < 2:
-        return {
-            "human_summary": "Waiting for more data...",
-            "state": "Stable",
-            "drift_score": 0.0,
-            "baseline_interval_ms": 0.0,
-            "current_interval_ms": 0.0,
-            "message": "Need at least 2 timestamps",
-            "events_processed": 0,
-            "trend": "Steady",
-            "trend_velocity": 0.0
-        }
-
-    # Parse timestamps
+    
+    # Sort timestamps chronologically BEFORE processing (fixes out-of-order inputs)
     try:
-        parsed_times = []
-        for ts in data.timestamps:
-            if ts.endswith('Z'):
-                ts = ts[:-1] + '+00:00'
-            dt = datetime.fromisoformat(ts)
-            parsed_times.append(dt)
+        sorted_timestamps = sorted(data.timestamps)
+        logger.info(f"Received {len(sorted_timestamps)} timestamps from {client_ip} (sorted)")
     except Exception as e:
-        logger.error(f"Timestamp parse error: {e}")
-        raise
+        logger.error(f"Failed to sort timestamps from {client_ip}: {e}")
+        raise HTTPException(status_code=422, detail="Invalid timestamps format")
+
+    events.clear()
+    
+    for ts_str in sorted_timestamps:
+        try:
+            # Handle both Z and timezone formats
+            clean_ts = ts_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_ts)
+            events.append(dt)
+        except Exception as e:
+            logger.warning(f"Failed to parse timestamp '{ts_str}' from {client_ip}: {e}")
+            continue  # skip bad timestamps instead of crashing
+
+    if len(events) < 2:
+        return StateResponse(
+            human_summary="Rhythm looks healthy.",
+            state="Stable",
+            drift_score=0.0,
+            baseline_interval_ms=0.0,
+            current_interval_ms=0.0,
+            message="Need at least 2 timestamps",
+            events_processed=len(events),
+            trend="Steady",
+            trend_velocity=0.0
+        )
 
     # Calculate intervals in ms
     intervals = []
-    for i in range(1, len(parsed_times)):
-        delta_ms = (parsed_times[i] - parsed_times[i-1]).total_seconds() * 1000
-        intervals.append(delta_ms)
+    for i in range(1, len(events)):
+        delta = (events[i] - events[i-1]).total_seconds() * 1000
+        intervals.append(delta)
 
-    # Add to rolling window
+    # Add to rolling window (we store intervals now)
     for interval in intervals:
-        events.append(interval)
+        events.append(interval)   # reuse events deque for intervals
 
     if len(events) < 2:
-        return {
-            "human_summary": "Still building baseline...",
-            "state": "Stable",
-            "drift_score": 0.0,
-            "baseline_interval_ms": 0.0,
-            "current_interval_ms": intervals[-1] if intervals else 0.0,
-            "message": "Building baseline...",
-            "events_processed": len(events),
-            "trend": "Steady",
-            "trend_velocity": 0.0
-        }
+        return StateResponse(
+            human_summary="Still building baseline...",
+            state="Stable",
+            drift_score=0.0,
+            baseline_interval_ms=0.0,
+            current_interval_ms=0.0,
+            message="Building baseline...",
+            events_processed=len(events),
+            trend="Steady",
+            trend_velocity=0.0
+        )
 
     # Z-score calculation
     rolling_list = list(events)
@@ -94,14 +101,14 @@ async def analyze(data: TimestampInput, request: Request):
     z_score = abs(current - baseline) / sigma
 
     # State + human_summary
-    if z_score < 1.8:   # Slightly lowered for reliable early warning in demos
+    if z_score < 1.8:
         state = "Stable"
         message = "Timing is healthy"
         human_summary = "Rhythm looks healthy."
     elif z_score < 3.0:
         state = "Shifting"
         message = "Early timing drift forming - upstream warning"
-        human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected."
+        human_summary = "Nothing looked wrong yet... but timing already changed. Early upstream shift detected."
     else:
         state = "Drift"
         message = "Cadence has drifted - intervene now"
@@ -109,6 +116,8 @@ async def analyze(data: TimestampInput, request: Request):
 
     # Trend calculation
     score_history.append(z_score)
+    trend = "Steady"
+    trend_velocity = 0.0
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent) / len(recent)
@@ -122,14 +131,7 @@ async def analyze(data: TimestampInput, request: Request):
         elif velocity < -buffer:
             trend = "Decreasing"
             trend_velocity = round(velocity, 3)
-            if state != "Stable":
-                human_summary += " — but slowing down."
-        else:
-            trend = "Steady"
-            trend_velocity = 0.0
-    else:
-        trend = "Steady"
-        trend_velocity = 0.0
+            human_summary += " — but slowing down."
 
     response = {
         "human_summary": human_summary,
@@ -143,5 +145,5 @@ async def analyze(data: TimestampInput, request: Request):
         "trend_velocity": trend_velocity
     }
 
-    logger.info(f"Response: {state} | drift={response['drift_score']} | trend={trend} | events={response['events_processed']}")
+    logger.info(f"Response: {state} | drift={response['drift_score']} | trend={trend} | events={len(events)}")
     return response
