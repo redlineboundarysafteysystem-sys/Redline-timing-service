@@ -11,7 +11,7 @@ logger = logging.getLogger("redline")
 
 app = FastAPI(title="RedLINE Timing Service")
 
-WINDOW_SIZE = 6          # <--- reduced for faster response to recent changes
+WINDOW_SIZE = 6
 SCORE_HISTORY_SIZE = 10
 
 class TimestampInput(BaseModel):
@@ -105,7 +105,7 @@ async def analyze(data: TimestampInput, request: Request):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Final demo-friendly thresholds
+    # Refined logic with sharper Drift message
     if z_score < 1.8:
         state = "Stable"
         if trend == "Increasing":
@@ -117,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 2.1:   # <--- lowered to 2.1
+    elif z_score < 2.1:
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
@@ -127,7 +127,11 @@ async def analyze(data: TimestampInput, request: Request):
             message = "Early timing drift forming - upstream warning"
     else:
         state = "Drift"
-        human_summary = "Cadence has moved off baseline. Drift detected."
+        # Sharper message for severe compression
+        if current_interval < baseline * 0.3:   # very sharp collapse
+            human_summary = "Cadence has moved sharply off baseline. Severe compression detected."
+        else:
+            human_summary = "Cadence has moved off baseline. Drift detected."
         if trend == "Increasing":
             human_summary += " — and it’s accelerating."
         message = "Critical – upstream shift detected"
