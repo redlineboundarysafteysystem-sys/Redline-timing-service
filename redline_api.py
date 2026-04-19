@@ -11,7 +11,7 @@ logger = logging.getLogger("redline")
 
 app = FastAPI(title="RedLINE Timing Service")
 
-WINDOW_SIZE = 8
+WINDOW_SIZE = 6          # <--- reduced for faster response to recent changes
 SCORE_HISTORY_SIZE = 10
 
 class TimestampInput(BaseModel):
@@ -117,7 +117,7 @@ async def analyze(data: TimestampInput, request: Request):
         else:
             human_summary = "Rhythm looks healthy."
             message = "Timing is healthy"
-    elif z_score < 2.2:   # <--- lowered to 2.2
+    elif z_score < 2.1:   # <--- lowered to 2.1
         state = "Shifting"
         if trend == "Increasing":
             human_summary = "Nothing looked wrong yet… but timing already changed. Early upstream shift detected — and it’s accelerating."
