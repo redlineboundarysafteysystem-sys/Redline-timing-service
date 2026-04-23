@@ -16,7 +16,7 @@ app = FastAPI(title="RedLINE Timing Service")
 WINDOW_SIZE = 8
 SCORE_HISTORY_SIZE = 10
 
-# In-memory storage
+# In-memory storage (resets on deploy)
 interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
@@ -36,6 +36,7 @@ class StateResponse(BaseModel):
 
 @app.post("/analyze", response_model=StateResponse)
 async def analyze(timestamps: Union[TimestampInput, List[str]]):
+    # Extract timestamps
     if isinstance(timestamps, TimestampInput):
         ts_list = timestamps.timestamps
     else:
@@ -54,21 +55,16 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
-    # Parse timestamps (with basic Z fix + fallback)
+    # Parse timestamps with basic fixes
     parsed_times = []
     for ts_str in ts_list:
         try:
-            ts_clean = str(ts_str).strip().replace("Z", "+00:00")
+            ts_clean = str(ts_str).strip().replace("Z", "+00:00").replace(" ", "T")
             dt = datetime.fromisoformat(ts_clean)
             parsed_times.append(dt)
-        except Exception:
-            try:
-                # Fallback for other common formats
-                dt = datetime.fromisoformat(str(ts_str).strip().replace(" ", "T"))
-                parsed_times.append(dt)
-            except Exception as e:
-                logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
-                continue
+        except Exception as e:
+            logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
+            continue
 
     if len(parsed_times) < 2:
         return StateResponse(
@@ -83,7 +79,7 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
-    # Calculate intervals in ms
+    # Calculate intervals in milliseconds
     intervals = []
     for i in range(1, len(parsed_times)):
         delta = parsed_times[i] - parsed_times[i-1]
@@ -102,11 +98,13 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
+    # Add to rolling window
     for interval in intervals:
         interval_window.append(interval)
 
     current_interval = intervals[-1]
 
+    # Calculate baseline and sigma
     if len(interval_window) >= 2:
         baseline = np.mean(interval_window)
         sigma = np.std(interval_window, ddof=1)
@@ -118,8 +116,8 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
 
     z_score = abs(current_interval - baseline) / sigma
 
+    # Track trend
     score_history.append(z_score)
-
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent[:-1]) / len(recent[:-1])
@@ -136,6 +134,7 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         trend = "Steady"
         trend_velocity = 0.0
 
+    # Determine state with fixed typo
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
