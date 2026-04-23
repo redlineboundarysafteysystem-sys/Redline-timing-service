@@ -4,7 +4,7 @@ from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
-from dateutil import parser
+from datetime import datetime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -54,15 +54,21 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
-    # Flexible parsing
+    # Parse timestamps (with basic Z fix + fallback)
     parsed_times = []
     for ts_str in ts_list:
         try:
-            dt = parser.parse(str(ts_str).strip())
+            ts_clean = str(ts_str).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(ts_clean)
             parsed_times.append(dt)
-        except Exception as e:
-            logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
-            continue
+        except Exception:
+            try:
+                # Fallback for other common formats
+                dt = datetime.fromisoformat(str(ts_str).strip().replace(" ", "T"))
+                parsed_times.append(dt)
+            except Exception as e:
+                logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
+                continue
 
     if len(parsed_times) < 2:
         return StateResponse(
@@ -114,7 +120,6 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
 
     score_history.append(z_score)
 
-    # Trend
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent[:-1]) / len(recent[:-1])
@@ -131,7 +136,6 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # State logic
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
