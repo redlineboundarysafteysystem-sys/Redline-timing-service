@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union
+from typing import List
 import numpy as np
 from collections import deque
 import logging
@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="RedLINE Timing Service")
 
 # Constants
-WINDOW_SIZE = 8
-SCORE_HISTORY_SIZE = 10
+WINDOW_SIZE = 8          # Number of recent intervals to use for baseline
+SCORE_HISTORY_SIZE = 10  # Number of recent drift scores to track trend
 
-# In-memory storage (resets on deploy)
+# In-memory storage (will reset on deploy)
 interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
@@ -35,12 +35,8 @@ class StateResponse(BaseModel):
     trend_velocity: float
 
 @app.post("/analyze", response_model=StateResponse)
-async def analyze(timestamps: Union[TimestampInput, List[str]]):
-    # Extract timestamps
-    if isinstance(timestamps, TimestampInput):
-        ts_list = timestamps.timestamps
-    else:
-        ts_list = timestamps
+async def analyze(input_data: TimestampInput):
+    ts_list = input_data.timestamps
 
     if len(ts_list) < 2:
         return StateResponse(
@@ -55,11 +51,11 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
-    # Parse timestamps with basic fixes
+    # Parse timestamps (basic ISO support with Z fix)
     parsed_times = []
     for ts_str in ts_list:
         try:
-            ts_clean = str(ts_str).strip().replace("Z", "+00:00").replace(" ", "T")
+            ts_clean = str(ts_str).strip().replace("Z", "+00:00")
             dt = datetime.fromisoformat(ts_clean)
             parsed_times.append(dt)
         except Exception as e:
@@ -98,26 +94,30 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend_velocity=0.0
         )
 
-    # Add to rolling window
+    # Add new intervals to rolling window
     for interval in intervals:
         interval_window.append(interval)
 
+    # Use the most recent interval as current
     current_interval = intervals[-1]
 
-    # Calculate baseline and sigma
+    # Calculate baseline and sigma from the window
     if len(interval_window) >= 2:
         baseline = np.mean(interval_window)
         sigma = np.std(interval_window, ddof=1)
         if sigma == 0:
-            sigma = max(baseline * 0.001, 0.001)
+            sigma = baseline * 0.001
     else:
         baseline = current_interval
-        sigma = max(baseline * 0.001, 0.001)
+        sigma = baseline * 0.001
 
+    # Calculate z-score (drift score)
     z_score = abs(current_interval - baseline) / sigma
 
-    # Track trend
+    # Track score history for trend
     score_history.append(z_score)
+
+    # Determine trend
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent[:-1]) / len(recent[:-1])
@@ -134,7 +134,7 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         trend = "Steady"
         trend_velocity = 0.0
 
-    # Determine state with fixed typo
+    # Determine state
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
