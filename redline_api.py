@@ -11,7 +11,8 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(**name**)
 
-app = FastAPI(title=“RedLINE Timing Service”)
+app = FastAPI()
+
 
 # Constants
 
