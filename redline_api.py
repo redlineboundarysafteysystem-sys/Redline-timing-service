@@ -1,48 +1,32 @@
+from fastapi import FastAPI, HTTPException
+from typing import List, Union, Dict
+
+app = FastAPI(title="RedLINE Timing Service")
+
 @app.post("/analyze")
-async def analyze(body: dict = None):
-    if body is None:
-        body = {}
+async def analyze(data: Union[Dict, List, None] = None):
+    if data is None:
+        data = {}
 
-    # Accept different ways people send data
-    if isinstance(body, list):
-        sessions = body
+    # Accept simple list or {"sessions": [...]}
+    if isinstance(data, list):
+        sessions = data
     else:
-        sessions = body.get("sessions") or body.get("timestamps") or body.get("input_data") or []
+        sessions = data.get("sessions") or data.get("timestamps") or []
 
-    if not isinstance(sessions, list) or len(sessions) < 2:
-        raise HTTPException(status_code=400, 
-            detail="Send a list like [72, 78, 75, ...] or {\"sessions\": [72, 78, ...]}")
+    if len(sessions) < 2:
+        raise HTTPException(status_code=400, detail="Send at least 2 numbers: [72, 78, 75, ...]")
 
     try:
         sessions = [float(x) for x in sessions]
     except:
         raise HTTPException(status_code=400, detail="All values must be numbers")
 
-    current = sum(sessions) / len(sessions)
-
-    interval_window.append(current)
-
-    if len(interval_window) < 2:
-        return {"human_summary": "Building baseline...", "state": "Stable", "drift_score": 0.0}
-
-    baseline = np.mean(list(interval_window))
-    drift_score = abs(current - baseline)
-
-    if drift_score < 10:
-        state = "Stable"
-        summary = "Rhythm looks healthy."
-    elif drift_score < 25:
-        state = "Shifting"
-        summary = "Nothing looked wrong yet... but timing already changed."
-    else:
-        state = "Drift"
-        summary = "Cadence has moved sharply off baseline."
+    avg = sum(sessions) / len(sessions)
 
     return {
-        "human_summary": summary,
-        "state": state,
-        "drift_score": round(drift_score, 2),
-        "baseline_interval": round(baseline, 1),
-        "current_interval": round(current, 1),
+        "human_summary": "Rhythm looks healthy." if avg > 60 else "Timing is shifting.",
+        "state": "Stable" if avg > 60 else "Shifting",
+        "average_interval": round(avg, 1),
         "events_processed": len(sessions)
     }
