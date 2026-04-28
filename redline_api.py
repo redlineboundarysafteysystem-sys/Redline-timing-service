@@ -1,6 +1,4 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
@@ -11,22 +9,19 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RedLINE Timing Service")
 
-# Constants
 WINDOW_SIZE = 8
 SCORE_HISTORY_SIZE = 10
 
 interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
-class TimestampInput(BaseModel):
-    timestamps: List[Union[str, float, int]]
-
 @app.post("/analyze")
-async def analyze(data: TimestampInput):
-    raw = data.timestamps
+async def analyze(data: dict):
+    # Get the list from the request
+    raw = data.get("timestamps") or data.get("data") or data
 
-    if len(raw) < 2:
-        return {"error": "Need at least 2 values. Send numbers like [72, 78, 75...] or full timestamps."}
+    if not isinstance(raw, list) or len(raw) < 2:
+        return {"error": "Send a list like [72, 78, 75, ...] or full timestamps."}
 
     # Convert raw numbers to timestamps if needed
     if all(isinstance(x, (int, float)) for x in raw):
@@ -106,5 +101,5 @@ async def analyze(data: TimestampInput):
         "trend_velocity": trend_velocity
     }
 
-    logger.info(f"Processed {len(parsed_times)} events → State: {state}, Drift: {response['drift_score']}")
+    logger.info(f"Processed {len(parsed_times)} events → State: {state}")
     return response
