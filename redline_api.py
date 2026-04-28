@@ -22,21 +22,23 @@ class TimestampInput(BaseModel):
     timestamps: List[str] = None
 
 @app.post("/analyze")
-async def analyze(data: Any = None):
-    # Handle different input formats
-    if isinstance(data, dict) and "timestamps" in data:
-        raw = data["timestamps"]
-    elif isinstance(data, list):
-        raw = data
-    elif hasattr(data, "timestamps") and data.timestamps is not None:
-        raw = data.timestamps
+async def analyze(input_data: Union[TimestampInput, List, dict, Any] = None):
+    # Extract the list of values no matter how it's sent
+    if isinstance(input_data, dict) and "timestamps" in input_data:
+        raw = input_data["timestamps"]
+    elif isinstance(input_data, list):
+        raw = input_data
+    elif hasattr(input_data, "timestamps") and input_data.timestamps is not None:
+        raw = input_data.timestamps
+    elif isinstance(input_data, dict):
+        raw = list(input_data.values())[0] if input_data else []
     else:
-        return {"error": "No timestamps provided. Send a list of times or intervals."}
+        raw = []
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 timestamps or intervals"}
+        return {"error": "Need at least 2 timestamps or intervals. Example: [72, 78, 75, ...] or full timestamps."}
 
-    # If user sent plain numbers → treat as intervals in seconds
+    # If numbers → treat as intervals in seconds
     if all(isinstance(x, (int, float)) for x in raw):
         base_time = datetime(2026, 4, 28, 14, 0, 0)
         timestamps = []
@@ -46,19 +48,19 @@ async def analyze(data: Any = None):
             current += timedelta(seconds=float(interval))
             timestamps.append(current.isoformat())
     else:
-        # Assume timestamps (strings)
         timestamps = [str(t) for t in raw]
 
     # Parse timestamps
     parsed_times = []
     for ts in timestamps:
         try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            dt_str = str(ts).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(dt_str)
             if dt.tzinfo is not None:
                 dt = dt.replace(tzinfo=None)
             parsed_times.append(dt)
         except:
-            continue  # skip bad ones
+            continue
 
     if len(parsed_times) < 2:
         return {"error": "Could not parse enough valid timestamps"}
@@ -72,13 +74,10 @@ async def analyze(data: Any = None):
     if not intervals:
         return {"error": "No intervals calculated"}
 
-    # Rolling baseline + z-score
+    # Rolling baseline + z-score logic (same as before)
     interval_window.extend(intervals)
-    if len(interval_window) < 2:
-        return {"error": "Not enough data"}
-
     baseline = np.mean(interval_window)
-    sigma = np.std(interval_window, ddof=1) if np.std(interval_window, ddof=1) > 0 else baseline * 0.001
+    sigma = np.std(interval_window, ddof=1) if np.std(interval_window, ddof=1) > 0 else (baseline * 0.001 or 1)
     current_interval = intervals[-1]
     z_score = abs(current_interval - baseline) / sigma
 
