@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union, Any
+from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
@@ -19,26 +19,16 @@ interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
 class TimestampInput(BaseModel):
-    timestamps: List[Union[str, float, int]] = None
+    timestamps: List[Union[str, float, int]]
 
 @app.post("/analyze")
-async def analyze(data: Any = None):
-    # Extract the list no matter how it's sent
-    if isinstance(data, dict) and "timestamps" in data:
-        raw = data["timestamps"]
-    elif isinstance(data, list):
-        raw = data
-    elif isinstance(data, TimestampInput):
-        raw = data.timestamps
-    elif isinstance(data, dict):
-        raw = list(data.values())[0] if data else []
-    else:
-        raw = []
+async def analyze(input_data: TimestampInput):
+    raw = input_data.timestamps
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 values. Send a list like [72, 78, 75, ...] or full timestamps."}
+        return {"error": "Need at least 2 values. Example: [72, 78, 75, ...] or full timestamps."}
 
-    # If all numbers → treat as intervals in seconds
+    # If numbers → treat as intervals in seconds
     if all(isinstance(x, (int, float)) for x in raw):
         base_time = datetime(2026, 4, 28, 14, 0, 0)
         timestamps = []
@@ -70,9 +60,6 @@ async def analyze(data: Any = None):
     for i in range(1, len(parsed_times)):
         delta = (parsed_times[i] - parsed_times[i-1]).total_seconds() * 1000
         intervals.append(delta)
-
-    if not intervals:
-        return {"error": "No intervals calculated"}
 
     # Rolling baseline + z-score
     interval_window.extend(intervals)
