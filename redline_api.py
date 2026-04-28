@@ -1,12 +1,11 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union
+from typing import List, Union, Any
 import numpy as np
 from collections import deque
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -16,124 +15,86 @@ app = FastAPI(title="RedLINE Timing Service")
 WINDOW_SIZE = 8
 SCORE_HISTORY_SIZE = 10
 
-# In-memory storage
 interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
 class TimestampInput(BaseModel):
-    timestamps: List[str]
+    timestamps: List[str] = None
 
-class StateResponse(BaseModel):
-    human_summary: str
-    state: str
-    drift_score: float
-    baseline_interval_ms: int
-    current_interval_ms: int
-    message: str
-    events_processed: int
-    trend: str
-    trend_velocity: float
-
-@app.post("/analyze", response_model=StateResponse)
-async def analyze(timestamps: Union[TimestampInput, List[str]]):
-    if isinstance(timestamps, TimestampInput):
-        ts_list = timestamps.timestamps
+@app.post("/analyze")
+async def analyze(data: Any = None):
+    # Handle different input formats
+    if isinstance(data, dict) and "timestamps" in data:
+        raw = data["timestamps"]
+    elif isinstance(data, list):
+        raw = data
+    elif hasattr(data, "timestamps") and data.timestamps is not None:
+        raw = data.timestamps
     else:
-        ts_list = timestamps
+        return {"error": "No timestamps provided. Send a list of times or intervals."}
 
-    if len(ts_list) < 2:
-        return StateResponse(
-            human_summary="Need at least 2 timestamps to analyze rhythm.",
-            state="Error",
-            drift_score=0.0,
-            baseline_interval_ms=0,
-            current_interval_ms=0,
-            message="Insufficient data",
-            events_processed=len(ts_list),
-            trend="Steady",
-            trend_velocity=0.0
-        )
+    if len(raw) < 2:
+        return {"error": "Need at least 2 timestamps or intervals"}
 
-    # Parse timestamps and make them naive (remove timezone)
+    # If user sent plain numbers → treat as intervals in seconds
+    if all(isinstance(x, (int, float)) for x in raw):
+        base_time = datetime(2026, 4, 28, 14, 0, 0)
+        timestamps = []
+        current = base_time
+        timestamps.append(current.isoformat())
+        for interval in raw[:-1]:
+            current += timedelta(seconds=float(interval))
+            timestamps.append(current.isoformat())
+    else:
+        # Assume timestamps (strings)
+        timestamps = [str(t) for t in raw]
+
+    # Parse timestamps
     parsed_times = []
-    for ts_str in ts_list:
+    for ts in timestamps:
         try:
-            ts_clean = str(ts_str).strip().replace("Z", "+00:00")
-            dt = datetime.fromisoformat(ts_clean)
-            # Make naive by removing tzinfo
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             if dt.tzinfo is not None:
                 dt = dt.replace(tzinfo=None)
             parsed_times.append(dt)
-        except Exception as e:
-            logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
-            continue
+        except:
+            continue  # skip bad ones
 
     if len(parsed_times) < 2:
-        return StateResponse(
-            human_summary="Could not parse enough valid timestamps.",
-            state="Error",
-            drift_score=0.0,
-            baseline_interval_ms=0,
-            current_interval_ms=0,
-            message="Parsing failed",
-            events_processed=len(parsed_times),
-            trend="Steady",
-            trend_velocity=0.0
-        )
+        return {"error": "Could not parse enough valid timestamps"}
 
-    # Calculate intervals in milliseconds
+    # Calculate intervals
     intervals = []
     for i in range(1, len(parsed_times)):
-        delta = parsed_times[i] - parsed_times[i-1]
-        intervals.append(delta.total_seconds() * 1000)
+        delta = (parsed_times[i] - parsed_times[i-1]).total_seconds() * 1000
+        intervals.append(delta)
 
     if not intervals:
-        return StateResponse(
-            human_summary="No valid intervals could be calculated.",
-            state="Error",
-            drift_score=0.0,
-            baseline_interval_ms=0,
-            current_interval_ms=0,
-            message="No intervals",
-            events_processed=len(parsed_times),
-            trend="Steady",
-            trend_velocity=0.0
-        )
+        return {"error": "No intervals calculated"}
 
-    for interval in intervals:
-        interval_window.append(interval)
+    # Rolling baseline + z-score
+    interval_window.extend(intervals)
+    if len(interval_window) < 2:
+        return {"error": "Not enough data"}
 
+    baseline = np.mean(interval_window)
+    sigma = np.std(interval_window, ddof=1) if np.std(interval_window, ddof=1) > 0 else baseline * 0.001
     current_interval = intervals[-1]
-
-    if len(interval_window) >= 2:
-        baseline = np.mean(interval_window)
-        sigma = np.std(interval_window, ddof=1)
-        if sigma == 0:
-            sigma = max(baseline * 0.001, 0.001)
-    else:
-        baseline = current_interval
-        sigma = max(baseline * 0.001, 0.001)
-
     z_score = abs(current_interval - baseline) / sigma
 
+    # Trend
     score_history.append(z_score)
-
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
-        prev_avg = sum(recent[:-1]) / len(recent[:-1])
+        prev_avg = np.mean(recent[:-1])
         velocity = z_score - prev_avg
-        buffer = 0.15
-        if velocity > buffer:
-            trend = "Increasing"
-        elif velocity < -buffer:
-            trend = "Decreasing"
-        else:
-            trend = "Steady"
+        trend = "Increasing" if velocity > 0.15 else "Decreasing" if velocity < -0.15 else "Steady"
         trend_velocity = round(velocity, 3)
     else:
         trend = "Steady"
         trend_velocity = 0.0
 
+    # State
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
@@ -147,17 +108,17 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
         message = "Critical — upstream timing collapse detected"
 
-    response = StateResponse(
-        human_summary=human_summary,
-        state=state,
-        drift_score=round(z_score, 3),
-        baseline_interval_ms=int(round(baseline)),
-        current_interval_ms=int(round(current_interval)),
-        message=message,
-        events_processed=len(parsed_times),
-        trend=trend,
-        trend_velocity=trend_velocity
-    )
+    response = {
+        "human_summary": human_summary,
+        "state": state,
+        "drift_score": round(z_score, 3),
+        "baseline_interval_ms": int(round(baseline)),
+        "current_interval_ms": int(round(current_interval)),
+        "message": message,
+        "events_processed": len(parsed_times),
+        "trend": trend,
+        "trend_velocity": trend_velocity
+    }
 
-    logger.info(f"Processed {len(parsed_times)} events → State: {state}, Drift: {response.drift_score}")
+    logger.info(f"Processed {len(parsed_times)} events → State: {state}, Drift: {response['drift_score']}")
     return response
