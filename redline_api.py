@@ -22,13 +22,13 @@ class TimestampInput(BaseModel):
     timestamps: List[Union[str, float, int]]
 
 @app.post("/analyze")
-async def analyze(input_data: TimestampInput):
-    raw = input_data.timestamps
+async def analyze(data: TimestampInput):
+    raw = data.timestamps
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 values. Example: [72, 78, 75, ...] or full timestamps."}
+        return {"error": "Need at least 2 values. Send numbers (intervals) or timestamps."}
 
-    # If numbers → treat as intervals in seconds
+    # Convert raw numbers to timestamps if needed
     if all(isinstance(x, (int, float)) for x in raw):
         base_time = datetime(2026, 4, 28, 14, 0, 0)
         timestamps = []
