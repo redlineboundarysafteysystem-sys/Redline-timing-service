@@ -1,51 +1,29 @@
-from fastapi import FastAPI, HTTPException
-from typing import List, Union, Dict, Any
-import numpy as np
-from collections import deque
-
-app = FastAPI(title="RedLINE Timing Service")
-
-# Rolling window for baseline
-WINDOW_SIZE = 8
-interval_window = deque(maxlen=WINDOW_SIZE)
-
 @app.post("/analyze")
-async def analyze(input_data: Union[Dict[str, Any], List, None] = None):
-    if input_data is None:
-        raise HTTPException(status_code=400, detail="No data received")
+async def analyze(body: dict = None):
+    if body is None:
+        body = {}
 
-    # Accept simple list OR {"sessions": [...]}
-    if isinstance(input_data, list):
-        sessions = input_data
-    elif isinstance(input_data, dict):
-        sessions = input_data.get("sessions") or input_data.get("timestamps") or []
+    # Accept different ways people send data
+    if isinstance(body, list):
+        sessions = body
     else:
-        sessions = []
+        sessions = body.get("sessions") or body.get("timestamps") or body.get("input_data") or []
 
-    if len(sessions) < 2:
+    if not isinstance(sessions, list) or len(sessions) < 2:
         raise HTTPException(status_code=400, 
-            detail="Send at least 2 numbers like [72, 78, 75, ...] or {\"sessions\": [72, 78, ...]}")
+            detail="Send a list like [72, 78, 75, ...] or {\"sessions\": [72, 78, ...]}")
 
-    # Convert to numbers
     try:
         sessions = [float(x) for x in sessions]
     except:
         raise HTTPException(status_code=400, detail="All values must be numbers")
 
-    # Calculate current interval (average for demo)
     current = sum(sessions) / len(sessions)
 
     interval_window.append(current)
 
     if len(interval_window) < 2:
-        return {
-            "human_summary": "Building baseline...",
-            "state": "Stable",
-            "drift_score": 0.0,
-            "baseline_interval": round(current, 1),
-            "current_interval": round(current, 1),
-            "events_processed": len(sessions)
-        }
+        return {"human_summary": "Building baseline...", "state": "Stable", "drift_score": 0.0}
 
     baseline = np.mean(list(interval_window))
     drift_score = abs(current - baseline)
