@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union
+from typing import List, Union, Any
 import numpy as np
 from collections import deque
 import logging
@@ -22,19 +22,21 @@ class TimestampInput(BaseModel):
     timestamps: List[Union[str, float, int]] = None
 
 @app.post("/analyze")
-async def analyze(input_data: Union[TimestampInput, List, dict] = None):
-    # Extract the list of values
-    if isinstance(input_data, dict) and "timestamps" in input_data:
-        raw = input_data["timestamps"]
-    elif isinstance(input_data, list):
-        raw = input_data
-    elif isinstance(input_data, TimestampInput):
-        raw = input_data.timestamps
+async def analyze(data: Any = None):
+    # Extract the list no matter how it's sent
+    if isinstance(data, dict) and "timestamps" in data:
+        raw = data["timestamps"]
+    elif isinstance(data, list):
+        raw = data
+    elif isinstance(data, TimestampInput):
+        raw = data.timestamps
+    elif isinstance(data, dict):
+        raw = list(data.values())[0] if data else []
     else:
         raw = []
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 values. Send timestamps or intervals like [72, 78, 75, ...]"}
+        return {"error": "Need at least 2 values. Send a list like [72, 78, 75, ...] or full timestamps."}
 
     # If all numbers → treat as intervals in seconds
     if all(isinstance(x, (int, float)) for x in raw):
