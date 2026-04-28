@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union, Any
+from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
@@ -19,26 +19,24 @@ interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
 class TimestampInput(BaseModel):
-    timestamps: List[str] = None
+    timestamps: List[Union[str, float, int]] = None
 
 @app.post("/analyze")
-async def analyze(input_data: Union[TimestampInput, List, dict, Any] = None):
-    # Extract the list of values no matter how it's sent
+async def analyze(input_data: Union[TimestampInput, List, dict] = None):
+    # Extract the list of values
     if isinstance(input_data, dict) and "timestamps" in input_data:
         raw = input_data["timestamps"]
     elif isinstance(input_data, list):
         raw = input_data
-    elif hasattr(input_data, "timestamps") and input_data.timestamps is not None:
+    elif isinstance(input_data, TimestampInput):
         raw = input_data.timestamps
-    elif isinstance(input_data, dict):
-        raw = list(input_data.values())[0] if input_data else []
     else:
         raw = []
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 timestamps or intervals. Example: [72, 78, 75, ...] or full timestamps."}
+        return {"error": "Need at least 2 values. Send timestamps or intervals like [72, 78, 75, ...]"}
 
-    # If numbers → treat as intervals in seconds
+    # If all numbers → treat as intervals in seconds
     if all(isinstance(x, (int, float)) for x in raw):
         base_time = datetime(2026, 4, 28, 14, 0, 0)
         timestamps = []
@@ -74,7 +72,7 @@ async def analyze(input_data: Union[TimestampInput, List, dict, Any] = None):
     if not intervals:
         return {"error": "No intervals calculated"}
 
-    # Rolling baseline + z-score logic (same as before)
+    # Rolling baseline + z-score
     interval_window.extend(intervals)
     baseline = np.mean(interval_window)
     sigma = np.std(interval_window, ddof=1) if np.std(interval_window, ddof=1) > 0 else (baseline * 0.001 or 1)
