@@ -26,7 +26,7 @@ async def analyze(data: TimestampInput):
     raw = data.timestamps
 
     if len(raw) < 2:
-        return {"error": "Need at least 2 values. Send numbers (intervals) or timestamps."}
+        return {"error": "Need at least 2 values. Send numbers like [72, 78, 75...] or full timestamps."}
 
     # Convert raw numbers to timestamps if needed
     if all(isinstance(x, (int, float)) for x in raw):
