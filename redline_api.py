@@ -125,7 +125,6 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
 
     # Trend / velocity: compare last z to previous z-average in this request
     if len(window) >= 3:
-        # Compute z-scores for the last few intervals in this request
         z_scores = []
         for iv in window:
             z = abs(iv - baseline) / sigma if sigma > 0 else 0.0
@@ -143,7 +142,6 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             trend = "Increasing"
         elif velocity < -buffer:
             trend = "Decreasing"
-            # Note: a sharp collapse can show as "Decreasing" in z-space
         else:
             trend = "Steady"
         trend_velocity = round(float(velocity), 3)
@@ -158,7 +156,7 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         jitter_pct = 0.0
     jitter_pct = round(float(jitter_pct), 4)
 
-    # Early warning score: blend of drift magnitude, jitter, and velocity
+    # Early warning score
     early_warning_score = (
         0.5 * float(z_score) +
         0.3 * abs(jitter_pct) +
@@ -166,20 +164,35 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
     )
     early_warning_score = round(float(early_warning_score), 3)
 
-    # State classification
-    if z_score < 1.5:
+    # --- State classification with collapse override ---
+
+    # Detect severe compression (micro-collapse)
+    is_compression = current_interval < baseline
+    is_hard_jitter = jitter_pct >= 0.80  # 80%+ deviation
+    is_collapse = is_compression and is_hard_jitter
+
+    # Override: treat severe compression as Drift even if z < 1.5
+    if is_collapse and z_score >= 1.0:
+        state = "Drift"
+        human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
+        message = "Critical — upstream timing collapse detected"
+
+    elif z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
         message = "Timing is healthy"
+
     elif z_score < 2.0:
         state = "Shifting"
         human_summary = "Nothing looked wrong yet... but timing already changed. Early upstream shift detected."
         message = "Early timing drift forming - upstream warning"
+
     else:
         state = "Drift"
         human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
         message = "Critical — upstream timing collapse detected"
 
+    # Build response
     response = StateResponse(
         human_summary=human_summary,
         state=state,
