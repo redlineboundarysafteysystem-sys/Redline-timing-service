@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Union
 import numpy as np
-from collections import deque
 import logging
 from datetime import datetime
 
@@ -12,13 +11,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RedLINE Timing Service")
 
-# Constants
+# Per-request window size for internal calculations
 WINDOW_SIZE = 8
-SCORE_HISTORY_SIZE = 10
-
-# In-memory storage
-interval_window = deque(maxlen=WINDOW_SIZE)
-score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
 class TimestampInput(BaseModel):
     timestamps: List[str]
@@ -38,6 +32,7 @@ class StateResponse(BaseModel):
 
 @app.post("/analyze", response_model=StateResponse)
 async def analyze(timestamps: Union[TimestampInput, List[str]]):
+    # Support both { "timestamps": [...] } and bare [ ... ]
     if isinstance(timestamps, TimestampInput):
         ts_list = timestamps.timestamps
     else:
@@ -107,39 +102,51 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
             early_warning_score=0.0
         )
 
-    # Update rolling window
-    for interval in intervals:
-        interval_window.append(interval)
+    # Use only the last WINDOW_SIZE intervals from THIS request
+    if len(intervals) > WINDOW_SIZE:
+        window = intervals[-WINDOW_SIZE:]
+    else:
+        window = intervals[:]
 
-    current_interval = intervals[-1]
+    current_interval = window[-1]
 
-    # Baseline + sigma
-    if len(interval_window) >= 2:
-        baseline = np.mean(interval_window)
-        sigma = np.std(interval_window, ddof=1)
+    # Baseline + sigma from this request only
+    if len(window) >= 2:
+        baseline = float(np.mean(window))
+        sigma = float(np.std(window, ddof=1))
         if sigma == 0:
             sigma = max(baseline * 0.001, 0.001)
     else:
-        baseline = current_interval
+        baseline = float(current_interval)
         sigma = max(baseline * 0.001, 0.001)
 
-    # Core drift metric (Z-score)
+    # Core drift metric (Z-score) for current interval
     z_score = abs(current_interval - baseline) / sigma
-    score_history.append(z_score)
 
-    # Trend / velocity
-    if len(score_history) >= 2:
-        recent = list(score_history)[-3:]
-        prev_avg = sum(recent[:-1]) / len(recent[:-1])
-        velocity = z_score - prev_avg
+    # Trend / velocity: compare last z to previous z-average in this request
+    if len(window) >= 3:
+        # Compute z-scores for the last few intervals in this request
+        z_scores = []
+        for iv in window:
+            z = abs(iv - baseline) / sigma if sigma > 0 else 0.0
+            z_scores.append(z)
+
+        recent = z_scores[-3:]
+        if len(recent) >= 2:
+            prev_avg = sum(recent[:-1]) / len(recent[:-1])
+            velocity = z_scores[-1] - prev_avg
+        else:
+            velocity = 0.0
+
         buffer = 0.15
         if velocity > buffer:
             trend = "Increasing"
         elif velocity < -buffer:
             trend = "Decreasing"
+            # Note: a sharp collapse can show as "Decreasing" in z-space
         else:
             trend = "Steady"
-        trend_velocity = round(velocity, 3)
+        trend_velocity = round(float(velocity), 3)
     else:
         trend = "Steady"
         trend_velocity = 0.0
@@ -152,15 +159,14 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
     jitter_pct = round(float(jitter_pct), 4)
 
     # Early warning score: blend of drift magnitude, jitter, and velocity
-    # Simple, explainable weighting you can tune later.
     early_warning_score = (
-        0.5 * z_score +          # core drift magnitude
-        0.3 * abs(jitter_pct) +  # noise around baseline
-        0.2 * abs(trend_velocity)  # how fast it's changing
+        0.5 * float(z_score) +
+        0.3 * abs(jitter_pct) +
+        0.2 * abs(trend_velocity)
     )
     early_warning_score = round(float(early_warning_score), 3)
 
-    # State classification (kept exactly in your voice)
+    # State classification
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
@@ -177,7 +183,7 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
     response = StateResponse(
         human_summary=human_summary,
         state=state,
-        drift_score=round(z_score, 3),
+        drift_score=round(float(z_score), 3),
         baseline_interval_ms=int(round(baseline)),
         current_interval_ms=int(round(current_interval)),
         message=message,
