@@ -1,26 +1,27 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List
+from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
 from datetime import datetime
 
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="RedLINE Timing Service")
 
+# Constants
 WINDOW_SIZE = 8
 SCORE_HISTORY_SIZE = 10
 
+# In-memory storage
 interval_window = deque(maxlen=WINDOW_SIZE)
 score_history = deque(maxlen=SCORE_HISTORY_SIZE)
 
-
 class TimestampInput(BaseModel):
     timestamps: List[str]
-
 
 class StateResponse(BaseModel):
     human_summary: str
@@ -32,11 +33,15 @@ class StateResponse(BaseModel):
     events_processed: int
     trend: str
     trend_velocity: float
-
+    jitter_pct: float
+    early_warning_score: float
 
 @app.post("/analyze", response_model=StateResponse)
-async def analyze(payload: TimestampInput):
-    ts_list = payload.timestamps
+async def analyze(timestamps: Union[TimestampInput, List[str]]):
+    if isinstance(timestamps, TimestampInput):
+        ts_list = timestamps.timestamps
+    else:
+        ts_list = timestamps
 
     if len(ts_list) < 2:
         return StateResponse(
@@ -48,9 +53,12 @@ async def analyze(payload: TimestampInput):
             message="Insufficient data",
             events_processed=len(ts_list),
             trend="Steady",
-            trend_velocity=0.0
+            trend_velocity=0.0,
+            jitter_pct=0.0,
+            early_warning_score=0.0
         )
 
+    # Parse timestamps and make them naive (remove timezone)
     parsed_times = []
     for ts_str in ts_list:
         try:
@@ -73,12 +81,15 @@ async def analyze(payload: TimestampInput):
             message="Parsing failed",
             events_processed=len(parsed_times),
             trend="Steady",
-            trend_velocity=0.0
+            trend_velocity=0.0,
+            jitter_pct=0.0,
+            early_warning_score=0.0
         )
 
+    # Calculate intervals in milliseconds
     intervals = []
     for i in range(1, len(parsed_times)):
-        delta = parsed_times[i] - parsed_times[i-1]
+        delta = parsed_times[i] - parsed_times[i - 1]
         intervals.append(delta.total_seconds() * 1000)
 
     if not intervals:
@@ -91,14 +102,18 @@ async def analyze(payload: TimestampInput):
             message="No intervals",
             events_processed=len(parsed_times),
             trend="Steady",
-            trend_velocity=0.0
+            trend_velocity=0.0,
+            jitter_pct=0.0,
+            early_warning_score=0.0
         )
 
+    # Update rolling window
     for interval in intervals:
         interval_window.append(interval)
 
     current_interval = intervals[-1]
 
+    # Baseline + sigma
     if len(interval_window) >= 2:
         baseline = np.mean(interval_window)
         sigma = np.std(interval_window, ddof=1)
@@ -108,10 +123,11 @@ async def analyze(payload: TimestampInput):
         baseline = current_interval
         sigma = max(baseline * 0.001, 0.001)
 
+    # Core drift metric (Z-score)
     z_score = abs(current_interval - baseline) / sigma
-
     score_history.append(z_score)
 
+    # Trend / velocity
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent[:-1]) / len(recent[:-1])
@@ -128,6 +144,23 @@ async def analyze(payload: TimestampInput):
         trend = "Steady"
         trend_velocity = 0.0
 
+    # Jitter: how far this interval is from baseline (percentage)
+    if baseline > 0:
+        jitter_pct = abs(current_interval - baseline) / baseline
+    else:
+        jitter_pct = 0.0
+    jitter_pct = round(float(jitter_pct), 4)
+
+    # Early warning score: blend of drift magnitude, jitter, and velocity
+    # Simple, explainable weighting you can tune later.
+    early_warning_score = (
+        0.5 * z_score +          # core drift magnitude
+        0.3 * abs(jitter_pct) +  # noise around baseline
+        0.2 * abs(trend_velocity)  # how fast it's changing
+    )
+    early_warning_score = round(float(early_warning_score), 3)
+
+    # State classification (kept exactly in your voice)
     if z_score < 1.5:
         state = "Stable"
         human_summary = "Rhythm looks healthy."
@@ -139,7 +172,7 @@ async def analyze(payload: TimestampInput):
     else:
         state = "Drift"
         human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
-        message = "Critical - upstream timing collapse detected"
+        message = "Critical — upstream timing collapse detected"
 
     response = StateResponse(
         human_summary=human_summary,
@@ -150,8 +183,14 @@ async def analyze(payload: TimestampInput):
         message=message,
         events_processed=len(parsed_times),
         trend=trend,
-        trend_velocity=trend_velocity
+        trend_velocity=trend_velocity,
+        jitter_pct=jitter_pct,
+        early_warning_score=early_warning_score
     )
 
-    logger.info(f"Processed {len(parsed_times)} events - State: {state}, Drift: {response.drift_score}")
+    logger.info(
+        f"Processed {len(parsed_times)} events → "
+        f"State: {state}, Drift: {response.drift_score}, "
+        f"Jitter: {response.jitter_pct}, EWS: {response.early_warning_score}"
+    )
     return response
