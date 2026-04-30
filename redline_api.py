@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Union, Dict, Any
+from typing import List, Union
 import numpy as np
 from collections import deque
 import logging
@@ -35,23 +35,15 @@ class StateResponse(BaseModel):
     trend_velocity: float
 
 @app.post("/analyze", response_model=StateResponse)
-async def analyze(input_data: Union[Dict[str, Any], List, TimestampInput, None] = None):
-    if input_data is None:
-        input_data = {}
-
-    # === FLEXIBLE INPUT HANDLING ===
-    if isinstance(input_data, list):
-        ts_list = input_data
-    elif isinstance(input_data, dict):
-        ts_list = input_data.get("timestamps") or input_data.get("sessions") or []
-    elif isinstance(input_data, TimestampInput):
-        ts_list = input_data.timestamps
+async def analyze(timestamps: Union[TimestampInput, List[str]]):
+    if isinstance(timestamps, TimestampInput):
+        ts_list = timestamps.timestamps
     else:
-        ts_list = []
+        ts_list = timestamps
 
     if len(ts_list) < 2:
         return StateResponse(
-            human_summary="Need at least 2 values to analyze rhythm.",
+            human_summary="Need at least 2 timestamps to analyze rhythm.",
             state="Error",
             drift_score=0.0,
             baseline_interval_ms=0,
@@ -62,43 +54,51 @@ async def analyze(input_data: Union[Dict[str, Any], List, TimestampInput, None] 
             trend_velocity=0.0
         )
 
-    # Handle raw numbers (sessions) OR timestamps
-    if all(isinstance(x, (int, float)) for x in ts_list):
-        # Raw number list (e.g. {"sessions": [72, 78, ...]})
-        intervals = [float(x) for x in ts_list]
-    else:
-        # Timestamp parsing (your original logic)
-        parsed_times = []
-        for ts_str in ts_list:
-            try:
-                ts_clean = str(ts_str).strip().replace("Z", "+00:00")
-                dt = datetime.fromisoformat(ts_clean)
-                if dt.tzinfo is not None:
-                    dt = dt.replace(tzinfo=None)
-                parsed_times.append(dt)
-            except Exception as e:
-                logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
-                continue
+    # Parse timestamps
+    parsed_times = []
+    for ts_str in ts_list:
+        try:
+            ts_clean = str(ts_str).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(ts_clean)
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            parsed_times.append(dt)
+        except Exception as e:
+            logger.warning(f"Failed to parse timestamp: {ts_str} - {e}")
+            continue
 
-        if len(parsed_times) < 2:
-            return StateResponse(
-                human_summary="Could not parse enough valid timestamps.",
-                state="Error",
-                drift_score=0.0,
-                baseline_interval_ms=0,
-                current_interval_ms=0,
-                message="Parsing failed",
-                events_processed=len(parsed_times),
-                trend="Steady",
-                trend_velocity=0.0
-            )
+    if len(parsed_times) < 2:
+        return StateResponse(
+            human_summary="Could not parse enough valid timestamps.",
+            state="Error",
+            drift_score=0.0,
+            baseline_interval_ms=0,
+            current_interval_ms=0,
+            message="Parsing failed",
+            events_processed=len(parsed_times),
+            trend="Steady",
+            trend_velocity=0.0
+        )
 
-        intervals = []
-        for i in range(1, len(parsed_times)):
-            delta = parsed_times[i] - parsed_times[i-1]
-            intervals.append(delta.total_seconds() * 1000)
+    # Calculate intervals in milliseconds
+    intervals = []
+    for i in range(1, len(parsed_times)):
+        delta = parsed_times[i] - parsed_times[i-1]
+        intervals.append(delta.total_seconds() * 1000)
 
-    # Core analysis logic
+    if not intervals:
+        return StateResponse(
+            human_summary="No valid intervals could be calculated.",
+            state="Error",
+            drift_score=0.0,
+            baseline_interval_ms=0,
+            current_interval_ms=0,
+            message="No intervals",
+            events_processed=len(parsed_times),
+            trend="Steady",
+            trend_velocity=0.0
+        )
+
     for interval in intervals:
         interval_window.append(interval)
 
@@ -152,10 +152,10 @@ async def analyze(input_data: Union[Dict[str, Any], List, TimestampInput, None] 
         baseline_interval_ms=int(round(baseline)),
         current_interval_ms=int(round(current_interval)),
         message=message,
-        events_processed=len(ts_list),
+        events_processed=len(parsed_times),
         trend=trend,
         trend_velocity=trend_velocity
     )
 
-    logger.info(f"Processed {len(ts_list)} events → State: {state}, Drift: {response.drift_score}")
+    logger.info(f"Processed {len(parsed_times)} events → State: {state}, Drift: {response.drift_score}")
     return response
