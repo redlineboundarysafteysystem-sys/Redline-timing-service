@@ -104,23 +104,45 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
 
     current_interval = intervals[-1]
 
-    if len(interval_window) >= 2:
-        baseline = np.mean(interval_window)
-        sigma = np.std(interval_window, ddof=1)
+    # === IMPROVED EARLY DETECTION LOGIC ===
+    if len(interval_window) < 4:  # More careful while baseline is building
+        baseline = np.mean(list(interval_window)) if len(interval_window) > 0 else current_interval
+        drift_score = abs(current_interval - baseline)
+        if drift_score < 800:
+            state = "Stable"
+            human_summary = "Rhythm looks healthy."
+            message = "Timing is healthy"
+        else:
+            state = "Shifting"
+            human_summary = "Nothing looked wrong yet... but timing already changed."
+            message = "Early timing drift forming - upstream warning"
+    else:
+        baseline = np.mean(list(interval_window))
+        sigma = np.std(list(interval_window), ddof=1)
         if sigma == 0:
             sigma = max(baseline * 0.001, 0.001)
-    else:
-        baseline = current_interval
-        sigma = max(baseline * 0.001, 0.001)
+        z_score = abs(current_interval - baseline) / sigma
+        drift_score = z_score
 
-    z_score = abs(current_interval - baseline) / sigma
+        if z_score < 1.5:
+            state = "Stable"
+            human_summary = "Rhythm looks healthy."
+            message = "Timing is healthy"
+        elif z_score < 2.0:
+            state = "Shifting"
+            human_summary = "Nothing looked wrong yet... but timing already changed. Early upstream shift detected."
+            message = "Early timing drift forming - upstream warning"
+        else:
+            state = "Drift"
+            human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
+            message = "Critical — upstream timing collapse detected"
 
-    score_history.append(z_score)
-
+    # Trend logic (kept from your original)
+    score_history.append(drift_score)
     if len(score_history) >= 2:
         recent = list(score_history)[-3:]
         prev_avg = sum(recent[:-1]) / len(recent[:-1])
-        velocity = z_score - prev_avg
+        velocity = drift_score - prev_avg
         buffer = 0.15
         if velocity > buffer:
             trend = "Increasing"
@@ -133,23 +155,10 @@ async def analyze(timestamps: Union[TimestampInput, List[str]]):
         trend = "Steady"
         trend_velocity = 0.0
 
-    if z_score < 1.5:
-        state = "Stable"
-        human_summary = "Rhythm looks healthy."
-        message = "Timing is healthy"
-    elif z_score < 2.0:
-        state = "Shifting"
-        human_summary = "Nothing looked wrong yet... but timing already changed. Early upstream shift detected."
-        message = "Early timing drift forming - upstream warning"
-    else:
-        state = "Drift"
-        human_summary = "Cadence has moved sharply off baseline. Severe compression or expansion detected."
-        message = "Critical — upstream timing collapse detected"
-
     response = StateResponse(
         human_summary=human_summary,
         state=state,
-        drift_score=round(z_score, 3),
+        drift_score=round(drift_score, 3),
         baseline_interval_ms=int(round(baseline)),
         current_interval_ms=int(round(current_interval)),
         message=message,
